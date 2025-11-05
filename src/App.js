@@ -1,25 +1,1175 @@
-import logo from './logo.svg';
-import './App.css';
+// App.jsx (Fixed CAD Editor with Proper Export/Import)
+import React, { useEffect, useRef, useState } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-function App() {
+export default function App() {
+  const mountRef = useRef(null);
+
+  // State
+  const [selectedEntity, setSelectedEntity] = useState(null);
+  const [mode, setMode] = useState("select");
+  const [sketchPoints, setSketchPoints] = useState([]);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [extrusionHeight, setExtrusionHeight] = useState(1.0);
+  const [sceneBackground, setSceneBackground] = useState("#e5e5e8ff");
+  const [history, setHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+
+  // Three refs
+  const sceneRef = useRef();
+  const cameraRef = useRef();
+  const rendererRef = useRef();
+  const controlsRef = useRef();
+  const raycasterRef = useRef();
+  const sketchLineRef = useRef();
+  const objectsRef = useRef([]);
+  const lastPointerPointRef = useRef(null);
+  const currentPreviewRef = useRef(null);
+
+  // Constants
+  const planeForSketch = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const GRID_SNAP = 0.5;
+
+  // ====== FIXED HISTORY MANAGEMENT ======
+  const saveHistory = () => {
+    const sceneState = objectsRef.current.map(obj => ({
+      type: obj.userData?.type || 'unknown',
+      position: [obj.position.x, obj.position.y, obj.position.z],
+      rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z],
+      scale: [obj.scale.x, obj.scale.y, obj.scale.z],
+      color: obj.userData.originalColor || 0xffffff,
+      userData: { ...obj.userData }
+    }));
+
+    // Clean userData for history
+    sceneState.forEach(obj => {
+      delete obj.userData.originalColor;
+      Object.keys(obj.userData).forEach(key => {
+        if (typeof obj.userData[key] === 'function' || 
+            obj.userData[key] instanceof THREE.Object3D) {
+          delete obj.userData[key];
+        }
+      });
+    });
+
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(sceneState);
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  };
+
+  const undo = () => {
+    if (historyIndex <= 0) return;
+    
+    const newIndex = historyIndex - 1;
+    setHistoryIndex(newIndex);
+    restoreScene(history[newIndex]);
+  };
+
+  const redo = () => {
+    if (historyIndex >= history.length - 1) return;
+    
+    const newIndex = historyIndex + 1;
+    setHistoryIndex(newIndex);
+    restoreScene(history[newIndex]);
+  };
+
+  const restoreScene = (sceneData) => {
+    clearAllObjects();
+    
+    sceneData.forEach(objData => {
+      let geometry;
+      switch (objData.type) {
+        case 'box':
+          geometry = new THREE.BoxGeometry(1, 1, 1);
+          break;
+        case 'sphere':
+          geometry = new THREE.SphereGeometry(0.5, 32, 32);
+          break;
+        case 'cylinder':
+          geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+          break;
+        case 'extruded':
+          geometry = new THREE.BoxGeometry(1, 1, 1);
+          break;
+        default:
+          geometry = new THREE.BoxGeometry(1, 1, 1);
+      }
+
+      const container = createMeshWithEdges(geometry, objData.color);
+      container.position.set(...objData.position);
+      container.rotation.set(...objData.rotation);
+      container.scale.set(...objData.scale);
+      container.userData = { 
+        ...objData.userData, 
+        originalColor: objData.color,
+        type: objData.type 
+      };
+
+      sceneRef.current.add(container);
+      objectsRef.current.push(container);
+    });
+  };
+
+  // ====== FIXED MESH CREATION WITH PROPER HIERARCHY ======
+  const createMeshWithEdges = (geometry, color = Math.random() * 0xffffff) => {
+    // Main mesh material
+    const material = new THREE.MeshStandardMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.9,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.userData.originalColor = color;
+    mesh.userData.type = geometry.type.toLowerCase().replace('geometry', '');
+    mesh.userData.isSelectable = true;
+
+    // Create a container group for the mesh and its helpers
+    const container = new THREE.Group();
+    container.add(mesh);
+    container.userData.isMainObject = true;
+    container.userData.type = mesh.userData.type;
+    container.userData.originalColor = color;
+
+    // Add wireframe edges - these are visual only, not for selection
+    const edges = new THREE.EdgesGeometry(geometry);
+    const edgeMaterial = new THREE.LineBasicMaterial({ 
+      color: 0x000000,
+      linewidth: 2
+    });
+    const wireframe = new THREE.LineSegments(edges, edgeMaterial);
+    mesh.add(wireframe);
+
+    return container;
+  };
+
+  // ====== SIMPLIFIED SELECTION SYSTEM ======
+  const clearAllHighlights = () => {
+    objectsRef.current.forEach(container => {
+      const mesh = container.children[0]; // Get the actual mesh
+      if (mesh && mesh.material) {
+        if (mesh.material.emissive) {
+          mesh.material.emissive.set(0x000000);
+        }
+        if (container.userData.originalColor) {
+          mesh.material.color.setHex(container.userData.originalColor);
+        }
+      }
+    });
+  };
+
+  const highlightEntity = (entity) => {
+    clearAllHighlights();
+    
+    if (entity && entity.children && entity.children[0]) {
+      const mesh = entity.children[0];
+      if (mesh.material && mesh.material.emissive) {
+        mesh.material.emissive.set(0x444400); // Yellow highlight for selected object
+      }
+    }
+  };
+
+  const handleSelection = (event) => {
+    if (!raycasterRef.current || !cameraRef.current || !rendererRef.current) return;
+
+    const rect = rendererRef.current.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    
+    raycasterRef.current.setFromCamera(mouse, cameraRef.current);
+    
+    // Only select main objects, not their children
+    const intersectableObjects = objectsRef.current.filter(obj => 
+      obj !== sketchLineRef.current && !obj.isGridHelper && obj.userData.isMainObject
+    );
+    
+    const intersects = raycasterRef.current.intersectObjects(intersectableObjects, true);
+    
+    if (intersects.length === 0) {
+      setSelectedEntity(null);
+      clearAllHighlights();
+      return;
+    }
+
+    // Find the main container object
+    let selectedObj = intersects[0].object;
+    while (selectedObj.parent && !selectedObj.userData.isMainObject) {
+      selectedObj = selectedObj.parent;
+    }
+
+    setSelectedEntity(selectedObj);
+    highlightEntity(selectedObj);
+  };
+
+  // ====== OBJECT MANAGEMENT ======
+  const addShape = (type, position = null) => {
+    if (!sceneRef.current) return null;
+    
+    let geometry;
+    switch (type) {
+      case "box":
+        geometry = new THREE.BoxGeometry(1, 1, 1);
+        break;
+      case "sphere":
+        geometry = new THREE.SphereGeometry(0.5, 32, 32);
+        break;
+      case "cylinder":
+        geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+        break;
+      default:
+        geometry = new THREE.BoxGeometry(1, 1, 1);
+    }
+
+    const container = createMeshWithEdges(geometry);
+    container.position.copy(position || new THREE.Vector3(0, 0.5, 0));
+
+    sceneRef.current.add(container);
+    objectsRef.current.push(container);
+    saveHistory();
+    return container;
+  };
+
+  const deleteSelected = () => {
+    if (!selectedEntity || !sceneRef.current) return;
+    
+    sceneRef.current.remove(selectedEntity);
+    objectsRef.current = objectsRef.current.filter(obj => obj !== selectedEntity);
+    setSelectedEntity(null);
+    saveHistory();
+  };
+
+  // ====== FIXED CLEAR FUNCTION ======
+  const clearAllObjects = () => {
+    if (!sceneRef.current) return;
+    
+    // Properly dispose of geometries and materials
+    objectsRef.current.forEach(obj => {
+      // Dispose of mesh geometry and materials
+      if (obj.children && obj.children[0]) {
+        const mesh = obj.children[0];
+        if (mesh.geometry) {
+          mesh.geometry.dispose();
+        }
+        if (mesh.material) {
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach(material => material.dispose());
+          } else {
+            mesh.material.dispose();
+          }
+        }
+      }
+      sceneRef.current.remove(obj);
+    });
+    
+    objectsRef.current = [];
+    setSelectedEntity(null);
+    
+    // Don't save history here to avoid empty scene in history
+  };
+
+  // ====== TRANSFORMATION SYSTEM ======
+  const transformSelected = (transformation) => {
+    if (!selectedEntity) return;
+
+    switch (transformation.type) {
+      case "translate":
+        selectedEntity.position.add(transformation.vector);
+        break;
+      case "rotate":
+        selectedEntity.rotation[transformation.axis] += transformation.angle;
+        break;
+      case "scale":
+        selectedEntity.scale.multiply(transformation.vector);
+        break;
+      default:
+        break;
+    }
+    saveHistory();
+  };
+
+  // ====== 2D SKETCHING SYSTEM ======
+  const clearSketch = () => {
+    setSketchPoints([]);
+    updateSketchLine([]);
+    
+    if (currentPreviewRef.current) {
+      sceneRef.current.remove(currentPreviewRef.current);
+      currentPreviewRef.current.geometry?.dispose();
+      currentPreviewRef.current = null;
+    }
+  };
+
+  const finishPolygon = () => {
+    if (sketchPoints.length < 3) {
+      alert("Need at least 3 points to create a polygon");
+      return;
+    }
+    
+    const first = sketchPoints[0];
+    const last = sketchPoints[sketchPoints.length - 1];
+    
+    if (first.distanceTo(last) > 0.1) {
+      const closed = [...sketchPoints, first.clone()];
+      setSketchPoints(closed);
+      updateSketchLine(closed);
+    }
+  };
+
+  const startRectangle = (startEvent) => {
+    const startPoint = pointerToPlane(startEvent);
+    if (!startPoint) return;
+    
+    setIsDrawing(true);
+    lastPointerPointRef.current = startPoint.clone();
+
+    if (currentPreviewRef.current) {
+      sceneRef.current.remove(currentPreviewRef.current);
+      currentPreviewRef.current.geometry?.dispose();
+      currentPreviewRef.current = null;
+    }
+
+    const previewGeom = new THREE.PlaneGeometry(1, 1);
+    const previewMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff00,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide
+    });
+    
+    const preview = new THREE.Mesh(previewGeom, previewMat);
+    preview.rotation.x = -Math.PI / 2;
+    preview.position.y = 0.05;
+    sceneRef.current.add(preview);
+    currentPreviewRef.current = preview;
+
+    const onMove = (moveEvent) => {
+      const p = pointerToPlane(moveEvent);
+      if (!p) return;
+      
+      lastPointerPointRef.current = p.clone();
+      const width = Math.abs(p.x - startPoint.x);
+      const height = Math.abs(p.z - startPoint.z);
+      const centerX = (p.x + startPoint.x) / 2;
+      const centerZ = (p.z + startPoint.z) / 2;
+
+      preview.scale.set(Math.max(width, 0.001), Math.max(height, 0.001), 1);
+      preview.position.set(centerX, 0.05, centerZ);
+
+      const previewPoints = [
+        new THREE.Vector3(startPoint.x, 0, startPoint.z),
+        new THREE.Vector3(p.x, 0, startPoint.z),
+        new THREE.Vector3(p.x, 0, p.z),
+        new THREE.Vector3(startPoint.x, 0, p.z),
+        new THREE.Vector3(startPoint.x, 0, startPoint.z)
+      ];
+      updateSketchLine(previewPoints);
+    };
+
+    const onUp = () => {
+      setIsDrawing(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+
+      const endPoint = lastPointerPointRef.current || startPoint;
+      
+      if (currentPreviewRef.current) {
+        sceneRef.current.remove(currentPreviewRef.current);
+        currentPreviewRef.current.geometry?.dispose();
+        currentPreviewRef.current = null;
+      }
+
+      const points = [
+        new THREE.Vector3(startPoint.x, 0, startPoint.z),
+        new THREE.Vector3(endPoint.x, 0, startPoint.z),
+        new THREE.Vector3(endPoint.x, 0, endPoint.z),
+        new THREE.Vector3(startPoint.x, 0, endPoint.z),
+        new THREE.Vector3(startPoint.x, 0, startPoint.z)
+      ];
+      
+      setSketchPoints(points);
+      updateSketchLine(points);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const startCircle = (startEvent) => {
+    const center = pointerToPlane(startEvent);
+    if (!center) return;
+    
+    setIsDrawing(true);
+    lastPointerPointRef.current = center.clone();
+
+    if (currentPreviewRef.current) {
+      sceneRef.current.remove(currentPreviewRef.current);
+      currentPreviewRef.current.geometry?.dispose();
+      currentPreviewRef.current = null;
+    }
+
+    const circleSegments = 32;
+    const previewGeom = new THREE.BufferGeometry();
+    const previewMat = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+    
+    const preview = new THREE.Line(previewGeom, previewMat);
+    sceneRef.current.add(preview);
+    currentPreviewRef.current = preview;
+
+    const onMove = (moveEvent) => {
+      const p = pointerToPlane(moveEvent);
+      if (!p) return;
+      
+      lastPointerPointRef.current = p.clone();
+      const radius = center.distanceTo(p);
+      
+      const pts = Array.from({ length: circleSegments + 1 }, (_, i) => {
+        const angle = (i / circleSegments) * Math.PI * 2;
+        return new THREE.Vector3(
+          center.x + Math.cos(angle) * radius,
+          0.01,
+          center.z + Math.sin(angle) * radius
+        );
+      });
+      
+      preview.geometry.dispose();
+      preview.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+      updateSketchLine(pts);
+    };
+
+    const onUp = () => {
+      setIsDrawing(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+
+      const p = lastPointerPointRef.current || center;
+      const radius = center.distanceTo(p);
+
+      const pts = Array.from({ length: circleSegments + 1 }, (_, i) => {
+        const angle = (i / circleSegments) * Math.PI * 2;
+        return new THREE.Vector3(
+          center.x + Math.cos(angle) * radius,
+          0,
+          center.z + Math.sin(angle) * radius
+        );
+      });
+
+      if (currentPreviewRef.current) {
+        sceneRef.current.remove(currentPreviewRef.current);
+        currentPreviewRef.current.geometry?.dispose();
+        currentPreviewRef.current = null;
+      }
+
+      setSketchPoints(pts);
+      updateSketchLine(pts);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const handlePolygonClick = (event) => {
+    const p = pointerToPlane(event);
+    if (!p) return;
+    
+    setSketchPoints(prev => {
+      const newPts = [...prev, p.clone()];
+      updateSketchLine(newPts);
+      return newPts;
+    });
+  };
+
+  // ====== CORE UTILITY FUNCTIONS ======
+  const pointerToPlane = (event) => {
+    if (!rendererRef.current || !cameraRef.current || !raycasterRef.current) return null;
+    
+    const rect = rendererRef.current.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    
+    raycasterRef.current.setFromCamera(mouse, cameraRef.current);
+    const worldPoint = new THREE.Vector3();
+    raycasterRef.current.ray.intersectPlane(planeForSketch, worldPoint);
+    
+    if (!worldPoint) return null;
+    
+    // Snap to grid
+    worldPoint.x = Math.round(worldPoint.x / GRID_SNAP) * GRID_SNAP;
+    worldPoint.z = Math.round(worldPoint.z / GRID_SNAP) * GRID_SNAP;
+    worldPoint.y = 0;
+    
+    return worldPoint;
+  };
+
+  const updateSketchLine = (pointsArray) => {
+    if (!sketchLineRef.current) return;
+    
+    const pts = pointsArray.map(p => new THREE.Vector3(p.x, 0.01, p.z));
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    
+    sketchLineRef.current.geometry.dispose();
+    sketchLineRef.current.geometry = geom;
+  };
+
+  // ====== EXTRUSION SYSTEM ======
+  const extrudeSketch = () => {
+    if (!sceneRef.current || sketchPoints.length < 3) {
+      alert("Need at least 3 points to extrude");
+      return;
+    }
+
+    try {
+      const shape = new THREE.Shape();
+      shape.moveTo(sketchPoints[0].x, sketchPoints[0].z);
+      
+      for (let i = 1; i < sketchPoints.length; i++) {
+        shape.lineTo(sketchPoints[i].x, sketchPoints[i].z);
+      }
+
+      const first = sketchPoints[0];
+      const last = sketchPoints[sketchPoints.length - 1];
+      if (first.distanceTo(last) > 0.1) {
+        shape.lineTo(first.x, first.z);
+      }
+
+      const extrudeSettings = { 
+        depth: extrusionHeight, 
+        bevelEnabled: false, 
+        steps: 1 
+      };
+      
+      const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+      geometry.rotateX(-Math.PI / 2);
+
+      const container = createMeshWithEdges(geometry);
+      container.userData.type = "extruded";
+
+      const center = new THREE.Vector3();
+      sketchPoints.forEach(point => center.add(point));
+      center.divideScalar(sketchPoints.length);
+      container.position.copy(center);
+      container.position.y = extrusionHeight / 2;
+
+      sceneRef.current.add(container);
+      objectsRef.current.push(container);
+
+      setSelectedEntity(container);
+      clearAllHighlights();
+      highlightEntity(container);
+      clearSketch();
+      saveHistory();
+
+    } catch (error) {
+      console.error("Extrusion failed:", error);
+      alert("Extrusion failed: " + error.message);
+    }
+  };
+
+  // ====== FIXED EXPORT/IMPORT SYSTEM ======
+  const exportScene = () => {
+    const sceneData = {
+      objects: objectsRef.current.map(obj => ({
+        type: obj.userData?.type || 'unknown',
+        position: [obj.position.x, obj.position.y, obj.position.z],
+        rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z],
+        scale: [obj.scale.x, obj.scale.y, obj.scale.z],
+        color: obj.userData.originalColor || 0xffffff,
+        userData: { ...obj.userData }
+      })),
+      metadata: {
+        version: '1.0',
+        exportDate: new Date().toISOString(),
+        objectCount: objectsRef.current.length
+      }
+    };
+
+    // Remove circular references and clean up userData
+    sceneData.objects.forEach(obj => {
+      delete obj.userData.originalColor; // We'll store this separately
+      // Remove any non-serializable properties
+      Object.keys(obj.userData).forEach(key => {
+        if (typeof obj.userData[key] === 'function' || 
+            obj.userData[key] instanceof THREE.Object3D) {
+          delete obj.userData[key];
+        }
+      });
+    });
+
+    const dataStr = JSON.stringify(sceneData, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'cad-scene.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const importScene = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const sceneData = JSON.parse(e.target.result);
+        
+        // Clear current scene first
+        clearAllObjects();
+        
+        // Recreate each object
+        sceneData.objects.forEach(objData => {
+          let geometry;
+          switch (objData.type) {
+            case 'box':
+              geometry = new THREE.BoxGeometry(1, 1, 1);
+              break;
+            case 'sphere':
+              geometry = new THREE.SphereGeometry(0.5, 32, 32);
+              break;
+            case 'cylinder':
+              geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+              break;
+            case 'extruded':
+              // For extruded objects, we'll create a simple box as placeholder
+              // In a real implementation, you'd want to store the actual geometry data
+              geometry = new THREE.BoxGeometry(1, 1, 1);
+              break;
+            default:
+              geometry = new THREE.BoxGeometry(1, 1, 1);
+          }
+
+          const container = createMeshWithEdges(geometry, objData.color);
+          
+          // Restore position, rotation, and scale
+          container.position.set(...objData.position);
+          container.rotation.set(...objData.rotation);
+          container.scale.set(...objData.scale);
+          
+          // Restore userData
+          container.userData = { 
+            ...objData.userData, 
+            originalColor: objData.color,
+            type: objData.type 
+          };
+
+          sceneRef.current.add(container);
+          objectsRef.current.push(container);
+        });
+
+        // Save to history after import
+        saveHistory();
+        
+        console.log(`Successfully imported ${sceneData.objects.length} objects`);
+        
+      } catch (error) {
+        console.error('Import failed:', error);
+        alert('Failed to import scene: ' + error.message);
+      }
+    };
+    
+    reader.onerror = () => {
+      alert('Failed to read file');
+    };
+    
+    reader.readAsText(file);
+    event.target.value = ''; // Reset file input
+  };
+
+  // ====== KEYBOARD CONTROLS ======
+  useEffect(() => {
+    const handleKeyPress = (evt) => {
+      if (!selectedEntity) return;
+      
+      switch (evt.key.toLowerCase()) {
+        case "w": transformSelected({ type: "translate", vector: new THREE.Vector3(0, 0, -GRID_SNAP) }); break;
+        case "s": transformSelected({ type: "translate", vector: new THREE.Vector3(0, 0, GRID_SNAP) }); break;
+        case "a": transformSelected({ type: "translate", vector: new THREE.Vector3(-GRID_SNAP, 0, 0) }); break;
+        case "d": transformSelected({ type: "translate", vector: new THREE.Vector3(GRID_SNAP, 0, 0) }); break;
+        case "q": transformSelected({ type: "translate", vector: new THREE.Vector3(0, GRID_SNAP, 0) }); break;
+        case "e": transformSelected({ type: "translate", vector: new THREE.Vector3(0, -GRID_SNAP, 0) }); break;
+        case "r": transformSelected({ type: "rotate", axis: "y", angle: -0.2 }); break;
+        case "f": transformSelected({ type: "rotate", axis: "y", angle: 0.2 }); break;
+        case "t": transformSelected({ type: "scale", vector: new THREE.Vector3(1.2, 1.2, 1.2) }); break;
+        case "g": transformSelected({ type: "scale", vector: new THREE.Vector3(0.8, 0.8, 0.8) }); break;
+        case "delete":
+          deleteSelected();
+          break;
+        case "escape":
+          setSelectedEntity(null);
+          clearAllHighlights();
+          break;
+        case "z":
+          if (evt.ctrlKey || evt.metaKey) {
+            evt.preventDefault();
+            undo();
+          }
+          break;
+        case "y":
+          if (evt.ctrlKey || evt.metaKey) {
+            evt.preventDefault();
+            redo();
+          }
+          break;
+        default: break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyPress);
+    return () => window.removeEventListener("keydown", handleKeyPress);
+  }, [selectedEntity]);
+
+  // ====== TRANSFORMATION CONTROLS UI ======
+  const TransformationControls = () => {
+    if (!selectedEntity) return null;
+
+    return (
+      <div style={{ marginBottom: 15, padding: 12, background: 'rgba(255,255,255,0.1)', borderRadius: 6 }}>
+        <strong style={{ color: '#FFD700' }}>Transformation Controls</strong>
+        
+        <div style={{ marginTop: 8 }}>
+          <strong>Move:</strong>
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            {[
+              { axis: 'x', label: 'X+', vec: new THREE.Vector3(GRID_SNAP, 0, 0) },
+              { axis: 'y', label: 'Y+', vec: new THREE.Vector3(0, GRID_SNAP, 0) },
+              { axis: 'z', label: 'Z+', vec: new THREE.Vector3(0, 0, GRID_SNAP) },
+              { axis: 'x-', label: 'X-', vec: new THREE.Vector3(-GRID_SNAP, 0, 0) },
+              { axis: 'y-', label: 'Y-', vec: new THREE.Vector3(0, -GRID_SNAP, 0) },
+              { axis: 'z-', label: 'Z-', vec: new THREE.Vector3(0, 0, -GRID_SNAP) }
+            ].map(({ axis, label, vec }) => (
+              <button
+                key={axis}
+                onClick={() => transformSelected({ type: "translate", vector: vec })}
+                style={{ 
+                  padding: '6px 8px', 
+                  fontSize: '11px', 
+                  background: '#2196F3',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  flex: 1
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <strong>Rotate:</strong>
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            {[
+              { axis: 'x', label: 'X+', angle: 0.2 },
+              { axis: 'y', label: 'Y+', angle: 0.2 },
+              { axis: 'z', label: 'Z+', angle: 0.2 },
+              { axis: 'x-', label: 'X-', angle: -0.2 },
+              { axis: 'y-', label: 'Y-', angle: -0.2 },
+              { axis: 'z-', label: 'Z-', angle: -0.2 }
+            ].map(({ axis, label, angle }) => (
+              <button
+                key={axis}
+                onClick={() => transformSelected({ type: "rotate", axis: axis.replace('-', ''), angle: angle })}
+                style={{ 
+                  padding: '6px 8px', 
+                  fontSize: '11px', 
+                  background: '#9C27B0',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  flex: 1
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <strong>Scale:</strong>
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            <button
+              onClick={() => transformSelected({ type: "scale", vector: new THREE.Vector3(1.2, 1.2, 1.2) })}
+              style={{ 
+                padding: '6px 8px', 
+                fontSize: '11px', 
+                background: '#4CAF50',
+                color: 'white',
+                border: 'none',
+                borderRadius: 4,
+                flex: 1
+              }}
+            >
+              Scale Up
+            </button>
+            <button
+              onClick={() => transformSelected({ type: "scale", vector: new THREE.Vector3(0.8, 0.8, 0.8) })}
+              style={{ 
+                padding: '6px 8px', 
+                fontSize: '11px', 
+                background: '#FF9800',
+                color: 'white',
+                border: 'none',
+                borderRadius: 4,
+                flex: 1
+              }}
+            >
+              Scale Down
+            </button>
+            <button
+              onClick={() => transformSelected({ type: "scale", vector: new THREE.Vector3(1, 1, 1) })}
+              style={{ 
+                padding: '6px 8px', 
+                fontSize: '11px', 
+                background: '#607D8B',
+                color: 'white',
+                border: 'none',
+                borderRadius: 4,
+                flex: 1
+              }}
+            >
+              Reset Scale
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ====== ENHANCED PROPERTIES DISPLAY ======
+  const getEntityProperties = () => {
+    if (!selectedEntity) return null;
+    
+    return {
+      Type: selectedEntity.userData?.type ? selectedEntity.userData.type.toUpperCase() : "Unknown",
+      Position: `${selectedEntity.position.x.toFixed(3)}, ${selectedEntity.position.y.toFixed(3)}, ${selectedEntity.position.z.toFixed(3)}`,
+      Rotation: `${(selectedEntity.rotation.x * 180/Math.PI).toFixed(1)}°, ${(selectedEntity.rotation.y * 180/Math.PI).toFixed(1)}°, ${(selectedEntity.rotation.z * 180/Math.PI).toFixed(1)}°`,
+      Scale: `${selectedEntity.scale.x.toFixed(3)}, ${selectedEntity.scale.y.toFixed(3)}, ${selectedEntity.scale.z.toFixed(3)}`,
+    };
+  };
+
+  // ====== THREE.JS SETUP ======
+  useEffect(() => {
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(sceneBackground);
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(8, 10, 8);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    mountRef.current.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controlsRef.current = controls;
+
+    const raycaster = new THREE.Raycaster();
+    raycasterRef.current = raycaster;
+
+    // Enhanced Lighting
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(10, 15, 10);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+    
+    const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+    scene.add(ambientLight);
+
+    // Grid and sketch plane
+    const grid = new THREE.GridHelper(30, 30, 0x444444, 0x222222);
+    grid.isGridHelper = true;
+    scene.add(grid);
+    
+    const planeGeo = new THREE.PlaneGeometry(25, 25);
+    const planeMat = new THREE.MeshBasicMaterial({ 
+      color: 0x4444ff, 
+      transparent: true, 
+      opacity: 0.1, 
+      side: THREE.DoubleSide 
+    });
+    
+    const sketchPlane = new THREE.Mesh(planeGeo, planeMat);
+    sketchPlane.rotation.x = -Math.PI / 2;
+    sketchPlane.position.y = 0.001;
+    scene.add(sketchPlane);
+
+    // Sketch line
+    const sketchGeom = new THREE.BufferGeometry();
+    const sketchLine = new THREE.Line(
+      sketchGeom, 
+      new THREE.LineBasicMaterial({ color: 0xff0000, linewidth: 2 })
+    );
+    sketchLine.position.y = 0.01;
+    scene.add(sketchLine);
+    sketchLineRef.current = sketchLine;
+
+    // Event handlers
+    const onPointerDown = (ev) => {
+      if (mode === "select") {
+        handleSelection(ev);
+      } else if (mode === "sketch-rect") {
+        ev.preventDefault();
+        startRectangle(ev);
+      } else if (mode === "sketch-circle") {
+        ev.preventDefault();
+        startCircle(ev);
+      } else if (mode === "sketch-poly") {
+        ev.preventDefault();
+        if (ev.button === 0) {
+          handlePolygonClick(ev);
+        }
+      }
+    };
+
+    const onDoubleClick = (ev) => {
+      if (mode === "sketch-poly") {
+        ev.preventDefault();
+        finishPolygon();
+      }
+    };
+
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("dblclick", onDoubleClick);
+
+    // Animation loop
+    let mounted = true;
+    function animate() {
+      if (!mounted) return;
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    const onResize = () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    };
+
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener("resize", onResize);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("dblclick", onDoubleClick);
+      
+      if (mountRef.current && renderer.domElement) {
+        mountRef.current.removeChild(renderer.domElement);
+      }
+    };
+  }, [mode, sceneBackground]);
+
+  // ====== UI RENDER ======
+  const entityProperties = getEntityProperties();
+  const backgroundOptions = [
+    { name: "Dark Blue", value: "#1a1a2e" },
+    { name: "white", value: "#fffcfcff" },
+    { name: "Navy", value: "#0a1931" },
+  ];
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
+    <div>
+      <div ref={mountRef} style={{ width: "100vw", height: "100vh" }} />
+      
+      {/* UI Panel */}
+      <div style={{ 
+        position: "absolute", 
+        top: 10, 
+        left: 10, 
+        background: "rgba(0,0,0,0.9)", 
+        padding: 15, 
+        borderRadius: 8, 
+        color: "white", 
+        maxWidth: 400,
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '13px',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        maxHeight: '95vh',
+        overflowY: 'auto'
+      }}>
+        <h3 style={{ margin: '0 0 15px 0', color: '#4CAF50' }}>✏️ CAD Editor</h3>
+        
+        {/* History Controls */}
+        <div style={{ marginBottom: 15, display: 'flex', gap: 8 }}>
+          <button onClick={undo} disabled={historyIndex <= 0} style={{ padding: '8px 12px', background: historyIndex <= 0 ? '#666' : '#2196F3', color: 'white', border: 'none', borderRadius: 6, flex: 1 }}>
+            ⬅️ Undo
+          </button>
+          <button onClick={redo} disabled={historyIndex >= history.length - 1} style={{ padding: '8px 12px', background: historyIndex >= history.length - 1 ? '#666' : '#2196F3', color: 'white', border: 'none', borderRadius: 6, flex: 1 }}>
+            ➡️ Redo
+          </button>
+        </div>
+
+        {/* Scene Management */}
+        <div style={{ marginBottom: 15, display: 'flex', gap: 8 }}>
+          <button onClick={exportScene} style={{ padding: '8px 12px', background: '#2196F3', color: 'white', border: 'none', borderRadius: 6, flex: 1 }}>
+             Export
+          </button>
+          <label style={{ flex: 1 }}>
+            <input type="file" accept=".json" onChange={importScene} style={{ display: 'none' }} />
+            <div style={{ padding: '8px 12px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: 6, textAlign: 'center', cursor: 'pointer' }}>
+               Import
+            </div>
+          </label>
+          <button onClick={clearAllObjects} style={{ padding: '8px 12px', background: '#f44336', color: 'white', border: 'none', borderRadius: 6 }}>
+             Clear
+          </button>
+        </div>
+
+        {/* Background Selector */}
+        <div style={{ marginBottom: 15 }}>
+          <strong>Background:</strong>
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            {backgroundOptions.map(bg => (
+              <button
+                key={bg.value}
+                onClick={() => setSceneBackground(bg.value)}
+                style={{ 
+                  padding: '6px 10px', 
+                  fontSize: '11px',
+                  background: bg.value,
+                  color: 'white',
+                  border: sceneBackground === bg.value ? '2px solid #4CAF50' : '1px solid #666',
+                  borderRadius: 4
+                }}
+              >
+                {bg.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Mode Selection */}
+        <div style={{ marginBottom: 15 }}>
+          <strong>Mode:</strong>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+            {["select", "sketch-rect", "sketch-circle", "sketch-poly"].map(modeName => (
+              <button
+                key={modeName}
+                onClick={() => setMode(modeName)}
+                style={{ 
+                  padding: '8px 12px',
+                  background: mode === modeName ? '#4CAF50' : '#555',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 6,
+                  flex: 1,
+                  minWidth: '80px'
+                }}
+              >
+                {modeName.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Sketch Controls */}
+        {mode.startsWith("sketch") && (
+          <div style={{ marginBottom: 15, padding: 12, background: 'rgba(255,255,255,0.1)', borderRadius: 6 }}>
+            <div style={{ marginBottom: 10 }}>
+              <strong>Extrusion Height: {extrusionHeight}m</strong>
+              <input
+                type="range"
+                min="0.1"
+                max="5"
+                step="0.1"
+                value={extrusionHeight}
+                onChange={(e) => setExtrusionHeight(parseFloat(e.target.value))}
+                style={{ width: '100%', marginTop: 4 }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <button onClick={extrudeSketch} disabled={sketchPoints.length < 3} style={{ padding: '8px 12px', background: sketchPoints.length < 3 ? '#666' : '#FF9800', color: 'white', border: 'none', borderRadius: 4, flex: 1 }}>
+                 Extrude (make)
+              </button>
+              <button onClick={clearSketch} style={{ padding: '8px 12px', background: '#f44336', color: 'white', border: 'none', borderRadius: 4, flex: 1 }}>
+                 Clear
+              </button>
+            </div>
+            {mode === "sketch-poly" && (
+              <div style={{ fontSize: '11px', color: '#aaa' }}>
+                • Click to add points • Double-click to finish
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Primitive Creation */}
+        <div style={{ marginBottom: 15 }}>
+          <strong>Create Primitives:</strong>
+          <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+            {["box", "sphere", "cylinder"].map(type => (
+              <button
+                key={type}
+                onClick={() => addShape(type)}
+                style={{ 
+                  padding: '8px 12px',
+                  background: '#9C27B0',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 6,
+                  flex: 1
+                }}
+              >
+                {type.charAt(0).toUpperCase() + type.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Transformation Controls */}
+        <TransformationControls />
+
+        {/* Selected Entity Properties */}
+        {selectedEntity && entityProperties && (
+          <div style={{ marginBottom: 15, padding: 12, background: 'rgba(76, 175, 80, 0.2)', borderRadius: 6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <strong style={{ color: '#4CAF50' }}>
+                Selected: {selectedEntity.userData?.type?.toUpperCase() || "OBJECT"}
+              </strong>
+              <button onClick={deleteSelected} style={{ padding: '4px 8px', background: '#f44336', color: 'white', border: 'none', borderRadius: 4, fontSize: '11px' }}>
+                   Delete
+              </button>
+            </div>
+            {Object.entries(entityProperties).map(([key, value]) => (
+              <div key={key} style={{ fontSize: '12px', marginBottom: 4, display: 'flex' }}>
+                <span style={{ color: '#aaa', minWidth: '80px' }}>{key}:</span>
+                <span style={{ flex: 1 }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Controls Help */}
+        <div style={{ fontSize: '11px', color: '#aaa', lineHeight: '1.4', borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 10 }}>
+          <strong>Controls:</strong><br/>
+          • Click: Select objects<br/>
+          • WASD: Move selected<br/>
+          • Q/E: Move up/down<br/>
+          • R/F: Rotate Y axis<br/>
+          • T/G: Scale up/down<br/>
+          • Delete: Remove selected<br/>
+          • ESC: Clear selection<br/>
+          • Ctrl+Z/Y: Undo/Redo
+        </div>
+      </div>
     </div>
   );
 }
-
-export default App;
