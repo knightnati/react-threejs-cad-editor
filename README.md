@@ -135,6 +135,11 @@ Live demo: https://react-threejs-cad-editor.vercel.app/
 - ✅*Deployed URL** (https://react-threejs-cad-editor.vercel.app/)
 - ✅GitHub repository https://github.com/knightnati/react-threejs-cad-editor  
 
+worked on by
+Nathenael Gulilat Ababu 
++251980641961
+
+
 
 
 
