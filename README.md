@@ -125,6 +125,7 @@ Live demo: https://react-threejs-cad-editor.vercel.app/
 | **Editable sketches**                                               || Once extruded, sketches cannot be re-edited. |
 
 | **Transform gizmos**                                                || No 3D move/rotate gizmo; transformations rely on buttons/shortcuts. |
+|undo & redo                                                              || undo and rodo dont consistently work on sketched polygons
 
 
 ---
