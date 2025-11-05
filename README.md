@@ -82,13 +82,21 @@ Output will be inside `/build` (or `/dist` if using Vite).
 ##  Keyboard Shortcuts
 
 | Action |                                 | Key |
+
 |----------------------------------|----------------------------------------|
+
 | Move   X/Z/Y                     | W / A / S / D / Q / E |
+
 | Rotate                           | R / F |
+
 | Scale                            | T / G |
+
 | Delete selected                  | Delete |
+
 | Undo / Redo                      | Ctrl + Z / Ctrl + Y |
+
 | Clear selection                  | Esc |
+
 
 ---
 
@@ -103,13 +111,21 @@ Live demo: https://react-threejs-cad-editor.vercel.app/
 ##  Known Limitations
 
 | Limitation|                                                                                   | Description |
-|---------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
-| **Grouping**                                                        | Shapes cannot yet be grouped or combined for collective transforms. |
-| **Edge-based movement bugs**                                        | Occasionally, dragging shapes via edge selections can cause inconsistent movement behavior. |
-| **Boolean operations (cut/intersect/union)**                        | Overlapping primitives do not merge or cut each other. No solid modeling (CSG) implemented. |
-| **Face/Edge metrics**                                               | Displayed values are approximate; CAD-level accuracy not implemented. |
-| **Editable sketches**                                               | Once extruded, sketches cannot be re-edited. |
-| **Transform gizmos**                                                | No 3D move/rotate gizmo; transformations rely on buttons/shortcuts. |
+
+|---------------------------------------------------------------------||--------------------------------------------|
+
+| **Grouping**         || Shapes cannot yet be grouped or combined for collective transforms. |
+
+| **Edge-based movement bugs**                                        ||Occasionally, dragging shapes via edge selections can cause inconsistent movement behavior. |
+
+| **Boolean operations (cut/intersect/union)**                        || Overlapping primitives do not merge or cut each other. No solid modeling (CSG) implemented. |
+
+| **Face/Edge metrics**                                               || Displayed values are approximate; CAD-level accuracy not implemented. |
+
+| **Editable sketches**                                               || Once extruded, sketches cannot be re-edited. |
+
+| **Transform gizmos**                                                || No 3D move/rotate gizmo; transformations rely on buttons/shortcuts. |
+
 
 ---
 
