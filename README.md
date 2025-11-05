@@ -1,70 +1,127 @@
-# Getting Started with Create React App
+#  React + Three.js CAD Editor
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+A browser-based **CAD editor** built using **React** and **plain Three.js** .  
+The project demonstrates 3D scene management, primitive shape creation, 2D sketching with extrusion, selection, transformations, and JSON-based import/export.
 
-## Available Scripts
+This was developed as part of a **24-hour CAD Editor assessment**, emphasizing structure, usability, and core CAD principles.
 
-In the project directory, you can run:
+---
 
-### `npm start`
+##  Features
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+###  Primitive Shape Creation
+- Create 3D primitives: **Box**, **Sphere**, and **Cylinder**.
+- Each primitive has **distinct faces and edges** rendered via `THREE.EdgesGeometry`.
+- **Raycast selection** supports:
+  - Individual **faces**
+  - **Edges**
+  - Entire **shapes**
+- **Visual highlighting** for selected entities.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+###  2D Sketching & Extrusion
+- Switch to **Sketch Mode** to draw on the **XZ-plane**.
+- **Tools:** Rectangle and Circle.
+- **Snap-to-grid** precision drawing.
+- **Real-time preview** while dragging.
+- Extrude sketches into 3D using `THREE.ExtrudeGeometry`.
+- Extruded meshes can be selected and transformed like any primitive.
 
-### `npm test`
+###  Selection & Transformation
+- Select **faces, edges, or full shapes** via mouse.
+- Transformations:
+  - **Move**, **Rotate**, and **Scale** (via controls or keyboard shortcuts).
+- Display contextual **entity properties**:
+  - Shape → position, rotation, scale
+  - Face → normal, area
+  - Edge → length
+- Smooth highlighting for clear interaction feedback.
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+###  Import & Export
+- Export the entire scene to a `.json` file including:
+  - geometry
+  - transforms
+  - metadata
+- Import the `.json` file to fully restore the scene.
+- Imported shapes behave the same as newly created ones.
 
-### `npm run build`
+###  UI & Experience
+- Simple React-based toolbar.
+- Background theme options (including white, gray, and dark modes).
+- Undo/Redo functionality.
+- Keyboard shortcuts for all major actions.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+##  Setup & Run
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+### 1️ Clone or extract the project
+```bash
+git clone https://github.com/<your-username>/react-threejs-cad-editor.git
+cd react-threejs-cad-editor
+```
 
-### `npm run eject`
+### 2️ Install dependencies
+```bash
+npm install
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+### 3️ Start local development
+```bash
+npm start
+```
+App runs at **http://localhost:3000**
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### 4️ Build for production
+```bash
+npm run build
+```
+Output will be inside `/build` (or `/dist` if using Vite).
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+---
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+##  Keyboard Shortcuts
 
-## Learn More
+| Action |                                 | Key |
+|----------------------------------|----------------------------------------|
+| Move   X/Z/Y                     | W / A / S / D / Q / E |
+| Rotate                           | R / F |
+| Scale                            | T / G |
+| Delete selected                  | Delete |
+| Undo / Redo                      | Ctrl + Z / Ctrl + Y |
+| Clear selection                  | Esc |
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+---
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+##  Deployment
+Deployed via Vercel  GitHub Pages.  
+Live demo: https://react-threejs-cad-editor.vercel.app/
 
-### Code Splitting
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
 
-### Analyzing the Bundle Size
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+##  Known Limitations
 
-### Making a Progressive Web App
+| Limitation|                                                                                   | Description |
+|---------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
+| **Grouping**                                                        | Shapes cannot yet be grouped or combined for collective transforms. |
+| **Edge-based movement bugs**                                        | Occasionally, dragging shapes via edge selections can cause inconsistent movement behavior. |
+| **Boolean operations (cut/intersect/union)**                        | Overlapping primitives do not merge or cut each other. No solid modeling (CSG) implemented. |
+| **Face/Edge metrics**                                               | Displayed values are approximate; CAD-level accuracy not implemented. |
+| **Editable sketches**                                               | Once extruded, sketches cannot be re-edited. |
+| **Transform gizmos**                                                | No 3D move/rotate gizmo; transformations rely on buttons/shortcuts. |
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+---
 
-### Advanced Configuration
+##  Deliverables
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+- ✅*Deployed URL** (https://react-threejs-cad-editor.vercel.app/)
+- ✅GitHub repository https://github.com/knightnati/react-threejs-cad-editor  
 
-### Deployment
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
 
-### `npm run build` fails to minify
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+
+
+
+
